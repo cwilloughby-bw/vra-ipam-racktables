@@ -13,6 +13,7 @@ import requests
 from vra_ipam_utils.ipam import IPAM
 from vra_ipam_utils.exceptions import InvalidCertificateException
 import logging
+import pymysql
 
 
 '''
@@ -37,26 +38,24 @@ def do_validate_endpoint(self, auth_credentials, cert):
 
     username = auth_credentials["privateKeyId"]
     password = auth_credentials["privateKey"]
+    hostname = self.inputs["endpointProperties"]["hostName"]
+    databasename = self.inputs["endpointProperties"]["databaseName"]
 
     try:
-        response = requests.get("https://" + self.inputs["endpointProperties"]["hostName"], verify=cert, auth=(username, password))
+        # response = requests.get("https://" + self.inputs["endpointProperties"]["hostName"], verify=cert, auth=(username, password))
+        db = pymysql.connect(host=hostname,user=username,password=password,database=databasename)
+        cursor = db.cursor()
+        cursor.execute("SELECT VERSION()")
+        response = cursor.fetchone()
 
-        if response.status_code == 200:
+        if response is not None:
             return {
                 "message": "Validated successfully",
-                "statusCode": "200"
             }
-        elif response.status_code == 401:
-            logging.error(f"Invalid credentials error: {str(response.content)}")
-            raise Exception(f"Invalid credentials error: {str(response.content)}")
         else:
-            raise Exception(f"Failed to connect: {str(response.content)}")
+            raise Exception(f"Invalid response to SELECT VERSION: {str(response)}")
     except Exception as e:
-        """ In case of SSL validation error, a InvalidCertificateException is raised.
-            So that the IPAM SDK can go ahead and fetch the server certificate
-            and display it to the user for manual acceptance.
-        """
-        if "SSLCertVerificationError" in str(e) or "CERTIFICATE_VERIFY_FAILED" in str(e) or 'certificate verify failed' in str(e):
-            raise InvalidCertificateException("certificate verify failed", self.inputs["endpointProperties"]["hostName"], 443) from e
+        if "Unknown database" in str(e):
+            raise Exception(f"Couldn't find database {str(databasename)} on server {str(hostname)}")
 
         raise e

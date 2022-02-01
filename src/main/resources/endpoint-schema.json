@@ -21,6 +21,10 @@
                         "display":"textField"
                      },
                      {
+                        "id":"databaseName",
+                        "display":"textField"
+                     },
+                     {
                         "id":"properties",
                         "display":"datagrid",
                         "state":{
@@ -61,6 +65,15 @@
             "dataType":"string"
          },
          "label":"Hostname",
+         "constraints":{
+            "required":true
+         }
+      },
+      "databaseName":{
+         "type":{
+            "dataType":"string"
+         },
+         "label":"Database Name",
          "constraints":{
             "required":true
          }
