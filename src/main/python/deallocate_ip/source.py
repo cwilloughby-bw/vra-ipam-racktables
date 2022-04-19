@@ -12,6 +12,7 @@ conditions of the subcomponent's license, as noted in the LICENSE file.
 import requests
 from vra_ipam_utils.ipam import IPAM
 import logging
+import pymysql
 
 """
 Example payload:
@@ -70,26 +71,30 @@ def do_deallocate_ip(self, auth_credentials, cert):
 
     username = auth_credentials["privateKeyId"]
     password = auth_credentials["privateKey"]
+    hostname = self.inputs["endpoint"]["endpointProperties"]["hostName"]
+    databasename = self.inputs["endpoint"]["endpointProperties"]["databaseName"]
     deallocation_result = []
+    dbConnection = pymysql.connect(host=hostname,user=username,password=password,database=databasename)
+
     for deallocation in self.inputs["ipDeallocations"]:
-        deallocation_result.append(deallocate(self.inputs["resourceInfo"], deallocation))
+        deallocation_result.append(deallocate(self.inputs["resourceInfo"], deallocation, dbConnection))
 
     assert len(deallocation_result) > 0
     return {
         "ipDeallocations": deallocation_result
     }
 
-def deallocate(resource, deallocation):
+def deallocate(resource, deallocation, dbConnection):
     ip_range_id = deallocation["ipRangeId"]
     ip = deallocation["ipAddress"]
     resource_id = resource["id"]
 
     logging.info(f"Deallocating ip {ip} from range {ip_range_id}")
-
-    ## Plug your implementation here to deallocate an already allocated ip address
-    ## ...
-    ## Deallocation successful
-
+    with dbConnection.cursor() as cursor:
+      cursor.execute(f"DELETE FROM IPv4Address WHERE ip=INET_ATON('{str(ip)}');")
+      cursor.execute(f"INSERT INTO IPv4Log(ip, `date`, `user`, message)VALUES(INET_ATON('{str(ip)}'), now(), 'vra-ipam-racktables', 'Deallocated address');")
+    dbConnection.commit()
+    
     return {
         "ipDeallocationId": deallocation["id"],
         "message": "Success"

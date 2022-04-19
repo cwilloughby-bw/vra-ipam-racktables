@@ -34,15 +34,12 @@ def handler(context, inputs):
     return ipam.validate_endpoint()
 
 def do_validate_endpoint(self, auth_credentials, cert):
-    # Your implemention goes here
-
     username = auth_credentials["privateKeyId"]
     password = auth_credentials["privateKey"]
     hostname = self.inputs["endpointProperties"]["hostName"]
     databasename = self.inputs["endpointProperties"]["databaseName"]
 
     try:
-        # response = requests.get("https://" + self.inputs["endpointProperties"]["hostName"], verify=cert, auth=(username, password))
         db = pymysql.connect(host=hostname,user=username,password=password,database=databasename)
         cursor = db.cursor()
         cursor.execute("SELECT VERSION()")

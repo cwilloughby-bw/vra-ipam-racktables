@@ -9,9 +9,11 @@ and license terms. Your use of these subcomponents is subject to the terms and
 conditions of the subcomponent's license, as noted in the LICENSE file.
 """
 
+import ipaddress
 import requests
 from vra_ipam_utils.ipam import IPAM
 import logging
+import pymysql
 
 """
 Example payload
@@ -81,11 +83,22 @@ def do_allocate_ip(self, auth_credentials, cert):
 
     username = auth_credentials["privateKeyId"]
     password = auth_credentials["privateKey"]
+    hostname = self.inputs["endpoint"]["endpointProperties"]["hostName"]
+    databasename = self.inputs["endpoint"]["endpointProperties"]["databaseName"]
     allocation_result = []
+    dbConnection = pymysql.connect(host=hostname,user=username,password=password,database=databasename)
+
+    # try:
+    #   objectName = self.inputs["resourceInfo"]["name"]
+    #   cursor.execute(f"SELECT id FROM racktables_db.`Object`WHERE name='{str(objectName)}';")
+    #   racktablesObject = cursor.fetchall()
+    # except Exception as e:
+    #   logging.error(f"Error during creation of RackTables Object")
+
     try:
         resource = self.inputs["resourceInfo"]
         for allocation in self.inputs["ipAllocations"]:
-            allocation_result.append(allocate(resource, allocation, self.context, self.inputs["endpoint"]))
+            allocation_result.append(allocate(resource, allocation, self.context, self.inputs["endpoint"], dbConnection))
     except Exception as e:
         try:
             rollback(allocation_result)
@@ -99,27 +112,60 @@ def do_allocate_ip(self, auth_credentials, cert):
         "ipAllocations": allocation_result
     }
 
-def allocate(resource, allocation, context, endpoint):
+def allocate(resource, allocation, context, endpoint, dbConnection):
 
-    last_error = None
+    last_error = RuntimeError('No available IP addresses in specified ranges')
     for range_id in allocation["ipRangeIds"]:
-
         logging.info(f"Allocating from range {range_id}")
-        try:
-            return allocate_in_range(range_id, resource, allocation, context, endpoint)
-        except Exception as e:
-            last_error = e
-            logging.error(f"Failed to allocate from range {range_id}: {str(e)}")
+
+        getRangeInfoSql = f"SELECT id, INET_NTOA(ip), mask, name, comment FROM IPv4Network WHERE id={int(range_id)};"
+        getRangeConsumedAddressesSql = f"""SELECT INET_NTOA(iall.ip) ipaddress FROM IPv4Network in2, IPv4Allocation iall
+            WHERE in2.id = {int(range_id)} AND iall.ip BETWEEN in2.ip AND (in2.ip + POW(2,(32 - in2.mask))-1)
+            UNION
+            SELECT INET_NTOA(iadd.ip) FROM IPv4Network in3, IPv4Address iadd
+            WHERE in3.id = {int(range_id)} AND iadd.ip BETWEEN in3.ip+1 AND (in3.ip + POW(2,(32 - in3.mask))-2)
+            ORDER BY ipaddress"""
+        rangeConsumedAddresses = []
+        rangeNetwork = ipaddress.IPv4Network
+        with dbConnection.cursor() as cursor:
+          ## Get range info (Network address/mask/name/comment)
+          cursor.execute(getRangeInfoSql)
+          rangeInfo = cursor.fetchone()
+          ## Get all consumed addresses in that network
+          cursor.execute(getRangeConsumedAddressesSql)
+          rangeConsumedAddresses = cursor.fetchall()
+          ## Flatten the returned list (By default gets returned as a list of lists with a single string)
+          rangeConsumedAddresses = [address for sublist in rangeConsumedAddresses for address in sublist]
+          ## Create the IPv4 network object
+          rangeNetwork = ipaddress.ip_network(str(rangeInfo[1])+"/"+str(rangeInfo[2]))
+
+        for address in list(rangeNetwork.hosts()):
+          if str(address) not in rangeConsumedAddresses:
+              logging.info(f"Found candidate IP address: {str(address)}")
+              try:
+                  return allocate_in_range(range_id, resource, allocation, context, endpoint, dbConnection, address)
+              except Exception as e:
+                  last_error = e
+                  logging.error(f"Failed to allocate from range {range_id}: {str(e)}")
 
     logging.error("No more ranges. Raising last error")
     raise last_error
 
 
-def allocate_in_range(range_id, resource, allocation, context, endpoint):
+def allocate_in_range(range_id, resource, allocation, context, endpoint, dbConnection, ipAddress):
 
-    ## Plug your implementation here to allocate an ip address
-    ## ...
-    ## Allocation successful
+    allocationName = str(resource["name"])
+    try:
+      with dbConnection.cursor() as cursor:
+        addIpv4AddressSql = f"INSERT INTO IPv4Address(ip, name, comment, reserved) VALUES(INET_ATON('{str(ipAddress)}'), '{str(allocationName)}', '', 'no');"
+        addIpv4LogSql = f"INSERT INTO IPv4Log(ip, `date`, `user`, message)VALUES(INET_ATON('{str(ipAddress)}'), now(), 'vra-ipam-racktables', 'Allocated address for {str(allocationName)}');"
+        logging.info(addIpv4AddressSql)
+        logging.info(addIpv4LogSql)
+        cursor.execute(addIpv4AddressSql)
+        cursor.execute(addIpv4LogSql)
+      dbConnection.commit()
+    except Exception as e:
+      logging.error(f"Something went wrong while updating the RackTables DB: {str(e)}")
 
     result = {
         "ipAllocationId": allocation["id"],
@@ -127,8 +173,8 @@ def allocate_in_range(range_id, resource, allocation, context, endpoint):
         "ipVersion": "IPv4"
     }
 
-    result["ipAddresses"] = ["10.23.117.5"]
-    result["properties"] = {"customPropertyKey1": "customPropertyValue1"}
+    result["ipAddresses"] = [f"{str(ipAddress)}"]
+    # result["properties"] = {"customPropertyKey1": "customPropertyValue1"}
 
     return result
 
